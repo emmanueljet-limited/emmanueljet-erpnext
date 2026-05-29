@@ -1,0 +1,171 @@
+name: emmanueljet_office_services
+
+x-customizable-image: &customizable_image
+  image: ghcr.io/emmanueljet-limited/emmanueljet-erpnext:latest
+  pull_policy: always
+  restart: always
+  networks:
+    - office_net
+  volumes:
+    - erpnext_sites:/home/frappe/frappe-bench/sites
+    - erpnext_logs:/home/frappe/frappe-bench/logs
+
+x-depends-on-configurator: &depends_on_configurator
+  depends_on:
+    configurator:
+      condition: service_completed_successfully
+
+x-backend-defaults: &backend_defaults
+  <<: [*depends_on_configurator, *customizable_image]
+
+services:
+  frontend:
+    <<: *customizable_image
+    container_name: erpnext-frontend
+    ports:
+      - '127.0.0.1:8080:8080'
+    command:
+      - nginx-entrypoint.sh
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      FRAPPE_SITE_NAME_HEADER: emmanueljet
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: off
+      PROXY_READ_TIMEOUT: 300s
+      CLIENT_MAX_BODY_SIZE: 50m
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    depends_on:
+      - backend
+      - websocket
+
+  configurator:
+    <<: *backend_defaults
+    container_name: erpnext-configurator
+    restart: 'on-failure'
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - >
+        ls -1 apps > sites/apps.txt;
+        bench set-config -g db_host mariadb;
+        bench set-config -gp db_port 3306;
+        bench set-config -g redis_cache 'redis://redis-cache:6379';
+        bench set-config -g redis_queue 'redis://redis-queue:6379';
+        bench set-config -g redis_socketio 'redis://redis-queue:6379';
+        bench set-config -gp socketio_port 9000;
+    depends_on: {}
+
+  backend:
+    <<: *backend_defaults
+    container_name: erpnext-backend
+    environment:
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+    healthcheck:
+      test: ['CMD', 'curl', '-f', '-H', 'Host: emmanueljet', 'http://localhost:8000/api/method/ping']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+
+  websocket:
+    <<: *backend_defaults
+    container_name: erpnext-websocket
+    command: ['node', '/home/frappe/frappe-bench/apps/frappe/socketio.js']
+    environment:
+      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  queue-short:
+    <<: *backend_defaults
+    container_name: erpnext-queue-short
+    command: ['bench', 'worker', '--queue', 'short,default']
+    environment:
+      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  queue-long:
+    <<: *backend_defaults
+    container_name: erpnext-queue-long
+    command: ['bench', 'worker', '--queue', 'long,default,short']
+    environment:
+      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1.5G
+
+  scheduler:
+    <<: *backend_defaults
+    container_name: erpnext-scheduler
+    command: ['bench', 'schedule']
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  create-site:
+    <<: *backend_defaults
+    container_name: erpnext-create-site
+    restart: 'no'
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - >
+        echo "Waiting for configurator to write common_site_config.json...";
+        until grep -q '"db_host"' sites/common_site_config.json 2>/dev/null; do
+          sleep 2;
+        done;
+        echo "Config found. Proceeding with site creation.";
+        if [ ! -d "sites/emmanueljet" ]; then
+          echo "Site does not exist. Creating emmanueljet...";
+          bench new-site --mariadb-user-host-login-scope='%' --admin-password=${ERPNEXT_ADMIN_PASSWORD} --db-root-password=${MARIADB_ROOT_PASSWORD} --install-app erpnext --install-app hrms --install-app payments --install-app lending --install-app insights --install-app frappe_paystack --install-app webp --set-default emmanueljet;
+          echo "Site creation complete!";
+        else
+          echo "Site emmanueljet already exists. Skipping creation.";
+        fi
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+volumes:
+  erpnext_sites:
+  erpnext_logs:
+
+networks:
+  office_net:
+    external: true
