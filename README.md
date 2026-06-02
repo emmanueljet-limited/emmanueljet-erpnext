@@ -19,6 +19,7 @@
 - hrms (Decoupled HR and Payroll)
 - lending (Inter-company loan management)
 - insights (God-view Business Intelligence and Data Visualization)
+- print_designer (Customize professional print formats)
 - frappe_paystack (Multi-currency Africa-specific payment routing)
 
 ## Documentation
