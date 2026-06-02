@@ -19,6 +19,9 @@
     "url": "https://github.com/frappe/insights"
   },
   {
+    "url": "https://github.com/frappe/print_designer"
+  },
+  {
     "url": "https://github.com/mymi14s/frappe_paystack",
     "branch": "version-15"
   }
